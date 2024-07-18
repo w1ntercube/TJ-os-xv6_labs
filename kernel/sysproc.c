@@ -69,15 +69,40 @@ sys_sleep(void)
   return 0;
 }
 
-
-#ifdef LAB_PGTBL
 int
 sys_pgaccess(void)
 {
-  // lab pgtbl: your code here.
+  //接收用户空间传过来的三个参数
+  uint64 buf;//虚拟地址
+  int size ;
+  uint64 abits;
+  argaddr(0,&buf);
+  argint(1,&size);
+  argaddr(2,&abits);
+  //这里是第四个提示，需要创建一个临时的缓冲区
+  int abitss = 0;
+  //获取当前进程
+  struct proc *p = myproc();
+  for(int i = 0;i<size;i++){
+    int va = buf + i * PGSIZE;
+    int abit  = 0;
+    //从用户空间传过来的是虚拟地址，判断这个地址是否被访问过需要去查页表
+    //使用walk，通过虚拟地址查找页表项。
+    pte_t *pte = walk(p->pagetable,va,0);
+    if(pte == 0)
+      return 0;
+    //检查对应的标志位
+    if((*pte & PTE_A) != 0){
+      *pte = *pte & (~PTE_A);//清零 pte_a！！！
+      abit = 1;
+    }
+    //将结果保存到缓冲区
+    abitss = abitss | abit << i;
+  }
+  //将结果复制回用户空间
+  copyout(p->pagetable,abits,(char *)&abitss,sizeof(abitss));
   return 0;
 }
-#endif
 
 uint64
 sys_kill(void)
