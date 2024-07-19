@@ -77,8 +77,21 @@ usertrap(void)
     exit(-1);
 
   // give up the CPU if this is a timer interrupt.
-  if(which_dev == 2)
+if (which_dev == 2) { // 检查定时器中断
+    // 检查是否未在 sigalarm 处理中、是否设置了报警间隔、以及当前报警计数是否达到了报警间隔
+    if (!p->in_sigalarm && p->alarm_ddl && p->alarm_cur++ == p->alarm_ddl) {
+        // 重置报警计数
+        p->alarm_cur = 0;
+        // 标记正在 sigalarm 处理中
+        p->in_sigalarm = 1;
+        // 保存当前 trapframe 到 alarm_tf
+        memmove(&p->alarm_tf, p->trapframe, sizeof(struct trapframe));
+        // 将用户程序的下一条指令设置为报警处理函数的地址
+        p->trapframe->epc = (uint64)p->alarm_handler;
+    }
     yield();
+}
+
 
   usertrapret();
 }
@@ -112,7 +125,7 @@ usertrapret(void)
   
   // set S Previous Privilege mode to User.
   unsigned long x = r_sstatus();
-  x &= ~SSTATUS_SPP; // clear SPP to 0 for user mode
+  x &= ~SSTATUS_SPP; // clegar SPP to 0 for user mode
   x |= SSTATUS_SPIE; // enable interrupts in user mode
   w_sstatus(x);
 

@@ -92,3 +92,43 @@ sys_uptime(void)
   release(&tickslock);
   return xticks;
 }
+
+uint64 sys_sigalarm(void)
+{
+  struct proc *p;
+  int ticks;
+  uint64 handler;
+
+  // 从用户态获取第一个参数（报警间隔），存储在 ticks 变量中
+  argint(0, &ticks);
+  // 从用户态获取第二个参数（处理函数指针），存储在 handler 变量中
+  argaddr(1, &handler);
+  // 获取当前进程的进程控制块
+  p = myproc();
+
+  // 设置当前进程的报警间隔
+  p->alarm_ddl = ticks;
+  // 初始化当前报警计数为 0
+  p->alarm_cur = 0;
+  // 设置当前进程的报警处理函数
+  p->alarm_handler = (void (*)(void))handler;
+
+  return 0;
+}
+
+uint64 sys_sigreturn(void)
+{
+  struct proc *p;
+
+  // 获取当前进程的进程控制块
+  p = myproc();
+
+  // 将保存的 trapframe 恢复到当前进程的 trapframe
+  memmove(p->trapframe, &p->alarm_tf, sizeof(struct trapframe));
+
+  // 标记当前不在 sigalarm 处理中
+  p->in_sigalarm = 0;
+
+  // 返回中断前的 a0 寄存器的值
+  return p->trapframe->a0;
+}
