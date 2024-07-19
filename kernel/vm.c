@@ -303,6 +303,8 @@ uvmfree(pagetable_t pagetable, uint64 sz)
   freewalk(pagetable);
 }
 
+extern int page_refcnt[PHYSTOP/PGSIZE];
+
 // Given a parent process's page table, copy
 // its memory into a child's page table.
 // Copies both the page table and the
@@ -314,8 +316,8 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
 {
   pte_t *pte;
   uint64 pa, i;
-  uint flags;
-  char *mem;
+  // uint flags;
+  // char *mem;
 
   for(i = 0; i < sz; i += PGSIZE){
     if((pte = walk(old, i, 0)) == 0)
@@ -323,14 +325,29 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
     if((*pte & PTE_V) == 0)
       panic("uvmcopy: page not present");
     pa = PTE2PA(*pte);
-    flags = PTE_FLAGS(*pte);
-    if((mem = kalloc()) == 0)
-      goto err;
-    memmove(mem, (char*)pa, PGSIZE);
-    if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
-      kfree(mem);
-      goto err;
-    }
+
+    // // Allocates memory for child's page. 
+    // if((mem = kalloc()) == 0)
+    //   goto err;
+
+    // // Copy a page. 
+    // memmove(mem, (char*)pa, PGSIZE);
+
+    // // Map the new page to the child's page table. 
+    // if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
+    //   kfree(mem);
+    //   goto err;
+    // }
+
+    // 设置父进程页面的标志
+    if (*pte & PTE_W) *pte = (*pte ^ PTE_W) | PTE_COW; // 如果原本是可写的，则设置新的标志
+
+    // 将原始页面映射到子进程的页表，并设置新的标志
+    if (mappages(new, i, PGSIZE, pa, PTE_FLAGS(*pte)) != 0) goto err;
+    
+    // 增加页面引用计数
+    page_refcnt[(uint64)pa/PGSIZE] += 1;
+    // printf("Copied a page. refcnt=%d\n", page_refcnt[(uint64)pa/PGSIZE]);
   }
   return 0;
 
@@ -366,13 +383,38 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
     if(va0 >= MAXVA)
       return -1;
     pte = walk(pagetable, va0, 0);
-    if(pte == 0 || (*pte & PTE_V) == 0 || (*pte & PTE_U) == 0 ||
-       (*pte & PTE_W) == 0)
-      return -1;
+    if (pte == 0 || (*pte & PTE_V) == 0 || (*pte & PTE_U) == 0
+       || (((*pte & PTE_W) == 0) && ((*pte & PTE_COW) == 0))) // 既不可写也不是COW页面
+        return -1;
+    if ((*pte & PTE_W) == 0 && (*pte & PTE_COW)) // 遇到COW页面
+    {
+        // 与usertrap()中的处理相同
+        // 为新页面分配内存
+        char *mem;
+        if ((mem = kalloc()) == 0) {
+            not_enough_physical_memory_error:
+            // 在kalloc()失败时，如何处理？实验要求杀死这个进程。
+            printf("Not enough physical memory when copy-on-write! \n");
+            return -1;
+        }
+
+        // 复制页面
+        memmove(mem, (char*)PTE2PA(*pte), PGSIZE);
+
+        // 将新页面重新映射到页表
+        uint flags = PTE_FLAGS(*pte);
+        flags = (flags & (~PTE_COW)) | PTE_W; // 给予写权限，并标记为非COW
+        uvmunmap(pagetable, va0, 1, 1); // 从页表中取消映射旧的COW页面，并kfree()它
+        if (mappages(pagetable, va0, PGSIZE, (uint64)mem, flags) != 0) {
+            kfree(mem);
+            printf("This should never happen! The page SHOULD exist. mappages() won't fail!!! \n");
+            goto not_enough_physical_memory_error;
+        }
+    }
     pa0 = PTE2PA(*pte);
     n = PGSIZE - (dstva - va0);
-    if(n > len)
-      n = len;
+    if (n > len)
+        n = len;
     memmove((void *)(pa0 + (dstva - va0)), src, n);
 
     len -= n;

@@ -1,3 +1,4 @@
+
 #include "types.h"
 #include "param.h"
 #include "memlayout.h"
@@ -28,6 +29,9 @@ trapinithart(void)
 {
   w_stvec((uint64)kernelvec);
 }
+
+extern int page_refcnt[PHYSTOP/PGSIZE];
+extern char end[]; // 内核结束地址
 
 //
 // handle an interrupt, exception, or system call from user space.
@@ -67,10 +71,48 @@ usertrap(void)
     syscall();
   } else if((which_dev = devintr()) != 0){
     // ok
-  } else {
-    printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
-    printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
-    setkilled(p);
+  }
+else // 遇到页错误
+{
+    if (r_scause() == 15) { // 存储/AMO页面错误
+        // printf("Encountered exception: Store/AMO page fault\n");
+        uint64 write_va = r_stval();
+        if (write_va >= MAXVA) goto unexpected_scause; // 不应访问超过MAXVA的虚拟地址！（在usertests中）
+        pagetable_t pagetable = myproc()->pagetable;
+        pte_t *pte = walk(pagetable, write_va, 0);
+        if (*pte & PTE_COW) { // 这是一个COW页面
+            // 为新页面分配内存
+            char *mem;
+            if ((mem = kalloc()) == 0) {
+                not_enough_physical_memory_error:
+                // 在kalloc()失败时，如何处理？实验要求杀死这个进程。
+                printf("Not enough physical memory when copy-on-write! pid=%d\n", p->pid);
+                setkilled(p);
+            }
+
+            // 复制页面
+            memmove(mem, (char*)PTE2PA(*pte), PGSIZE);
+
+            // 将新页面重新映射到页表
+            uint flags = PTE_FLAGS(*pte);
+            flags = (flags & (~PTE_COW)) | PTE_W; // 给予写权限，并标记为非COW
+            uvmunmap(pagetable, PGROUNDDOWN(write_va), 1, 1); // 从页表中取消映射旧的COW页面，并kfree()它
+            if (mappages(pagetable, PGROUNDDOWN(write_va), PGSIZE, (uint64)mem, flags) != 0) {
+                kfree(mem);
+                printf("This should never happen! The page SHOULD exist. mappages() won't fail!!! \n");
+                goto not_enough_physical_memory_error;
+            }
+        }
+        else { // 不是COW页面
+            goto unexpected_scause;
+        }
+    }
+    else {
+        unexpected_scause:
+        printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
+        printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
+        setkilled(p);
+    }
   }
 
   if(killed(p))
@@ -218,4 +260,3 @@ devintr()
     return 0;
   }
 }
-
