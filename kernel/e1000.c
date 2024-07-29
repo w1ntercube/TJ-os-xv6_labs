@@ -102,7 +102,45 @@ e1000_transmit(struct mbuf *m)
   // the TX descriptor ring so that the e1000 sends it. Stash
   // a pointer so that it can be freed after sending.
   //
-  
+
+ // 加锁以确保对共享资源的访问是线程安全的
+  acquire(&e1000_lock);
+
+  // 获取当前TX环的尾索引
+  uint8 tail = regs[E1000_TDT];
+
+  // 检查当前描述符是否可用（即检查DD位是否已设置）
+  if ((tx_ring[tail].status & E1000_TXD_STAT_DD) == 0) {
+    // 如果描述符不可用，释放锁并返回错误
+    release(&e1000_lock);
+    return -1;
+  }
+
+  // 释放之前存储在当前描述符中的mbuf（如果有）
+  if (tx_mbufs[tail]) {
+    mbuffree(tx_mbufs[tail]);
+    tx_mbufs[tail] = 0;
+  }
+
+  // 存储当前要发送的mbuf
+  tx_mbufs[tail] = m;
+
+  // 将数据包的内存位置告知TX描述符以便DMA传输
+  tx_ring[tail].addr = (uint64)m->head;
+  tx_ring[tail].length = m->len;
+
+  // 清除描述符中的CSS、CSO和SPECIAL字段
+  // tx_ring[tail].css = tx_ring[tail].cso = tx_ring[tail].special = 0;
+
+  // 设置描述符的命令位，标记包的结束和需要报告状态
+  tx_ring[tail].cmd = E1000_TXD_CMD_EOP | E1000_TXD_CMD_RS;
+
+  // 更新TX环的尾索引
+  regs[E1000_TDT] = (tail + 1) % TX_RING_SIZE;
+
+  // 释放锁
+  release(&e1000_lock);
+
   return 0;
 }
 
@@ -115,6 +153,38 @@ e1000_recv(void)
   // Check for packets that have arrived from the e1000
   // Create and deliver an mbuf for each packet (using net_rx()).
   //
+  // 获取当前RX环的尾索引
+  uint8 tail = regs[E1000_RDT];
+
+  // 更新尾索引，指向下一个描述符
+  tail = (tail + 1) % RX_RING_SIZE;
+
+  // 遍历接收环中的描述符，检查是否有新的数据包到达
+  while (rx_ring[tail].status & E1000_RXD_STAT_DD) {
+    // 设置mbuf的长度为描述符中报告的长度
+    rx_mbufs[tail]->len = rx_ring[tail].length;
+
+    // 将接收到的数据包传递给网络栈
+    net_rx(rx_mbufs[tail]);
+
+    // 为接收环中的描述符分配新的mbuf
+    rx_mbufs[tail] = mbufalloc(0);
+    if (!rx_mbufs[tail]) {
+      panic("e1000_recv: mbufalloc failed");
+    }
+
+    // 更新描述符中的地址字段，指向新的mbuf
+    rx_ring[tail].addr = (uint64)rx_mbufs[tail]->head;
+
+    // 清除描述符中的状态位
+    rx_ring[tail].status = 0;
+
+    // 更新RX环的尾索引
+    regs[E1000_RDT] = tail;
+
+    // 更新尾索引，指向下一个描述符
+    tail = (tail + 1) % RX_RING_SIZE;
+  }
 }
 
 void
