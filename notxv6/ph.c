@@ -17,6 +17,8 @@ struct entry *table[NBUCKET];
 int keys[NKEYS];
 int nthread = 1;
 
+// 每个哈希桶一个锁，用于保护对哈希桶的并发访问
+pthread_mutex_t lock[NBUCKET];
 
 double
 now()
@@ -47,14 +49,17 @@ void put(int key, int value)
     if (e->key == key)
       break;
   }
+  // lock the bucket
+  pthread_mutex_lock(&lock[i]);
   if(e){
     // update the existing key.
     e->value = value;
   } else {
-    // the new is new.
+    // the key is new.
     insert(key, value, &table[i], table[i]);
   }
-
+  // unlock the bucket
+  pthread_mutex_unlock(&lock[i]);
 }
 
 static struct entry*
@@ -118,6 +123,9 @@ main(int argc, char *argv[])
     keys[i] = random();
   }
 
+  // initialize locks
+  for (int i = 0; i < NBUCKET; ++i)
+    pthread_mutex_init(&lock[i], NULL);
   //
   // first the puts
   //
@@ -130,6 +138,9 @@ main(int argc, char *argv[])
   }
   t1 = now();
 
+  // destroy locks
+  for (int i = 0; i < NBUCKET; ++i)
+    pthread_mutex_destroy(&lock[i]);
   printf("%d puts, %.3f seconds, %.0f puts/second\n",
          NKEYS, t1 - t0, NKEYS / (t1 - t0));
 
