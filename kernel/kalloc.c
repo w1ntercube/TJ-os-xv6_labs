@@ -19,14 +19,19 @@ struct run {
 };
 
 struct {
-  struct spinlock lock;
-  struct run *freelist;
-} kmem;
+  struct spinlock lock; // 自旋锁
+  struct run *freelist; // 空闲链表
+} kmem[NCPU];
 
 void
 kinit()
 {
-  initlock(&kmem.lock, "kmem");
+  char buf[10]; // 初始化每个cpu锁
+  for (int i = 0; i < NCPU; i++)
+  {
+    snprintf(buf, 10, "kmem_CPU%d", i); // 格式化锁的名称
+    initlock(&kmem[i].lock, buf); // 初始化锁
+  }
   freerange(end, (void*)PHYSTOP);
 }
 
@@ -56,10 +61,15 @@ kfree(void *pa)
 
   r = (struct run*)pa;
 
-  acquire(&kmem.lock);
-  r->next = kmem.freelist;
-  kmem.freelist = r;
-  release(&kmem.lock);
+  // 关闭中断，获取当前CPU的ID
+  push_off();
+  int cpu = cpuid();
+  pop_off();
+  // 获取当前CPU的锁，并将页面添加到空闲链表
+  acquire(&kmem[cpu].lock);
+  r->next = kmem[cpu].freelist;
+  kmem[cpu].freelist = r;
+  release(&kmem[cpu].lock);
 }
 
 // Allocate one 4096-byte page of physical memory.
@@ -70,11 +80,47 @@ kalloc(void)
 {
   struct run *r;
 
-  acquire(&kmem.lock);
-  r = kmem.freelist;
+  // 关闭中断，获取当前CPUID
+  push_off();
+  int cpu = cpuid();
+  pop_off();
+
+  // 获取当前CPU的锁，并尝试从空闲链表中分配页面
+  acquire(&kmem[cpu].lock);
+  r = kmem[cpu].freelist;
   if(r)
-    kmem.freelist = r->next;
-  release(&kmem.lock);
+    kmem[cpu].freelist = r->next; // 成功分配，将页面从空闲链表中移除
+  else // 从其他CPU窃取页面
+  {
+    struct run* tmp;
+    for (int i = 0; i < NCPU; ++i)
+    {
+      if (i == cpu) continue; // 跳过当前CPU
+      acquire(&kmem[i].lock);
+      tmp = kmem[i].freelist;
+      if (tmp == 0) { // 当前CPU无空闲页面，释放，继续检查下一个CPU
+        release(&kmem[i].lock);
+        continue;
+      } else {
+        for (int j = 0; j < 1024; j++) {
+          // 窃取最多1024个页面
+          if (tmp->next)
+            tmp = tmp->next;
+          else
+            break;
+        }
+        kmem[cpu].freelist = kmem[i].freelist;
+        kmem[i].freelist = tmp->next;
+        tmp->next = 0;
+        release(&kmem[i].lock);
+        break;
+      }
+    }
+    r = kmem[cpu].freelist;
+    if (r)
+      kmem[cpu].freelist = r->next;
+  }
+  release(&kmem[cpu].lock);
 
   if(r)
     memset((char*)r, 5, PGSIZE); // fill with junk
