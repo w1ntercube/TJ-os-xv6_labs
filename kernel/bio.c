@@ -187,7 +187,6 @@ void brelse(struct buf *b) {
 
 void
 bpin(struct buf *b) {
-  // change the lock - lab8-2
   int idx = HASH(b->blockno);
   acquire(&bcache.locks[idx]);
   b->refcnt++;
@@ -196,7 +195,6 @@ bpin(struct buf *b) {
 
 void
 bunpin(struct buf *b) {
-  // change the lock - lab8-2
   int idx = HASH(b->blockno);
   acquire(&bcache.locks[idx]);
   b->refcnt--;
