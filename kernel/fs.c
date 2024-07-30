@@ -385,36 +385,54 @@ bmap(struct inode *ip, uint bn)
   uint addr, *a;
   struct buf *bp;
 
+  // 如果逻辑块号小于直接块数量，直接返回对应的块地址
   if(bn < NDIRECT){
-    if((addr = ip->addrs[bn]) == 0){
-      addr = balloc(ip->dev);
-      if(addr == 0)
-        return 0;
-      ip->addrs[bn] = addr;
-    }
-    return addr;
+    if((addr = ip->addrs[bn]) == 0)  // 如果地址为空，则分配一个新块
+      ip->addrs[bn] = addr = balloc(ip->dev);
+    return addr;  // 返回块地址
   }
   bn -= NDIRECT;
 
+  // 如果逻辑块号在间接块范围内，处理间接块
   if(bn < NINDIRECT){
-    // Load indirect block, allocating if necessary.
-    if((addr = ip->addrs[NDIRECT]) == 0){
-      addr = balloc(ip->dev);
-      if(addr == 0)
-        return 0;
-      ip->addrs[NDIRECT] = addr;
-    }
+    // 加载间接块，如果需要则分配新块
+    if((addr = ip->addrs[NDIRECT]) == 0)
+      ip->addrs[NDIRECT] = addr = balloc(ip->dev);
     bp = bread(ip->dev, addr);
     a = (uint*)bp->data;
     if((addr = a[bn]) == 0){
-      addr = balloc(ip->dev);
-      if(addr){
-        a[bn] = addr;
-        log_write(bp);
-      }
+      a[bn] = addr = balloc(ip->dev);  // 分配新的磁盘块
+      log_write(bp);  // 写入日志
+    }
+    brelse(bp);  // 释放缓冲区
+    return addr;  // 返回块地址
+  }
+
+  // 处理双重间接块
+  bn -= NINDIRECT;
+  if(bn < NDOUBLYINDIRECT) {
+    // 获取双重间接块的地址
+    if((addr = ip->addrs[NDIRECT + 1]) == 0) {
+      ip->addrs[NDIRECT + 1] = addr = balloc(ip->dev);
+    }
+    bp = bread(ip->dev, addr);
+    a = (uint*)bp->data;
+    // 获取单重间接块的地址
+    if((addr = a[bn / NINDIRECT]) == 0) {
+      a[bn / NINDIRECT] = addr = balloc(ip->dev);
+      log_write(bp);  // 写入日志
     }
     brelse(bp);
-    return addr;
+    bp = bread(ip->dev, addr);
+    a = (uint*)bp->data;
+    bn %= NINDIRECT;
+    // 获取直接块的地址
+    if((addr = a[bn]) == 0) {
+      a[bn] = addr = balloc(ip->dev);
+      log_write(bp);  // 写入日志
+    }
+    brelse(bp);
+    return addr;  // 返回块地址
   }
 
   panic("bmap: out of range");
@@ -425,9 +443,9 @@ bmap(struct inode *ip, uint bn)
 void
 itrunc(struct inode *ip)
 {
-  int i, j;
-  struct buf *bp;
-  uint *a;
+  int i, j, k;
+  struct buf *bp, *bp2;
+  uint *a, *a2;
 
   for(i = 0; i < NDIRECT; i++){
     if(ip->addrs[i]){
@@ -447,6 +465,40 @@ itrunc(struct inode *ip)
     bfree(ip->dev, ip->addrs[NDIRECT]);
     ip->addrs[NDIRECT] = 0;
   }
+
+// 如果 inode 中存在双重间接块
+if(ip->addrs[NDIRECT + 1]) {
+  // 读取双重间接块，获取其地址
+  bp = bread(ip->dev, ip->addrs[NDIRECT + 1]);
+  a = (uint*)bp->data;
+
+  // 遍历双重间接块中的所有单重间接块，获取其地址
+  for(j = 0; j < NINDIRECT; ++j) {
+    if(a[j]) {
+      bp2 = bread(ip->dev, a[j]);
+      a2 = (uint*)bp2->data;
+
+      // 遍历单重间接块中的所有直接块并释放
+      for(k = 0; k < NINDIRECT; ++k) {
+        if(a2[k]) {
+          bfree(ip->dev, a2[k]);
+        }
+      }
+      // 释放单重间接块缓冲区
+      brelse(bp2);
+      // 释放单重间接块
+      bfree(ip->dev, a[j]);
+      // 将单重间接块地址置空
+      a[j] = 0;
+    }
+  }
+  // 释放双重间接块缓冲区
+  brelse(bp);
+  // 释放双重间接块
+  bfree(ip->dev, ip->addrs[NDIRECT + 1]);
+  // 将双重间接块地址置空
+  ip->addrs[NDIRECT + 1] = 0;
+}
 
   ip->size = 0;
   iupdate(ip);
