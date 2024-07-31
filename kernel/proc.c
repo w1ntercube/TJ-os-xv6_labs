@@ -5,7 +5,12 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
+#include "fcntl.h" 
+#include "sleeplock.h"  
+#include "fs.h"   
+#include "file.h" 
 
+#define min(a, b) ((a) < (b) ? (a) : (b))
 struct cpu cpus[NCPU];
 
 struct proc proc[NPROC];
@@ -308,6 +313,17 @@ fork(void)
       np->ofile[i] = filedup(p->ofile[i]);
   np->cwd = idup(p->cwd);
 
+  // 复制所有的VMA
+  for (i = 0; i < NVMA; ++i) {
+    // 检查父进程的VMA是否有效，即地址是否非零
+    if (p->vma[i].addr) {
+      // 将父进程的VMA结构复制到子进程的VMA数组中
+      np->vma[i] = p->vma[i];
+      // 增加关联文件的引用计数，确保文件在所有共享的进程结束前不会被关闭
+      filedup(np->vma[i].f);
+    }
+  }
+
   safestrcpy(np->name, p->name, sizeof(p->name));
 
   pid = np->pid;
@@ -348,8 +364,61 @@ exit(int status)
 {
   struct proc *p = myproc();
 
+  int i;
+  struct vm_area* vma;
+  uint maxsz = ((MAXOPBLOCKS - 1 - 1 - 2) / 2) * BSIZE;
+  uint64 va;
+  uint n, n1, r;
+
   if(p == initproc)
     panic("init exiting");
+
+  // 取消映射的内存
+  // 遍历进程的所有虚拟内存区域（VMA）
+  for (i = 0; i < NVMA; ++i) {
+    // 如果VMA的地址为0，表示未使用，跳过
+    if (p->vma[i].addr == 0) {
+      continue;
+    }
+    vma = &p->vma[i];
+
+    // 如果VMA具有MAP_SHARED标志
+    if ((vma->flags & MAP_SHARED)) {
+      // 遍历VMA覆盖的每个页面
+      for (va = vma->addr; va < vma->addr + vma->len; va += PGSIZE) {
+        // 检查页面是否为脏页
+        if (uvmgetdirty(p->pagetable, va) == 0) {
+          continue;
+        }
+        // 确定需要写回文件的大小
+        n = min(PGSIZE, vma->addr + vma->len - va);
+        for (r = 0; r < n; r += n1) {
+          // 确定每次写回的最大大小
+          n1 = min(maxsz, n - r);
+          // 开始文件操作
+          begin_op();
+          ilock(vma->f->ip);
+          // 将页面数据写回文件
+          if (writei(vma->f->ip, 1, va + r, va - vma->addr + vma->offset + r, n1) != n1) {
+            iunlock(vma->f->ip);
+            end_op();
+            panic("exit: writei failed");
+          }
+          iunlock(vma->f->ip);
+          end_op();
+        }
+      }
+    }
+    // 解除VMA区域的内存映射
+    uvmunmap(p->pagetable, vma->addr, (vma->len - 1) / PGSIZE + 1, 1);
+    // 清空VMA的属性
+    vma->addr = 0;
+    vma->len = 0;
+    vma->offset = 0;
+    vma->flags = 0;
+    fileclose(vma->f);
+    vma->f = 0;
+  }
 
   // Close all open files.
   for(int fd = 0; fd < NOFILE; fd++){
