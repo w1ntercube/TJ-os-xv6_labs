@@ -256,7 +256,9 @@ create(char *path, short type, short major, short minor)
   if((ip = dirlookup(dp, name, 0)) != 0){
     iunlockput(dp);
     ilock(ip);
-    if(type == T_FILE && (ip->type == T_FILE || ip->type == T_DEVICE))
+    // 改变检查条件，检查类型是否是文件、符号链接或设备文件
+    if((type == T_FILE || type == T_SYMLINK) && 
+        (ip->type == T_FILE || ip->type == T_DEVICE || ip->type == T_SYMLINK))
       return ip;
     iunlockput(ip);
     return 0;
@@ -301,6 +303,30 @@ create(char *path, short type, short major, short minor)
   return 0;
 }
 
+uint64 sys_symlink(void)
+{
+  char target[MAXPATH], path[MAXPATH];
+  if(argstr(0, target, MAXPATH) < 0)
+    return -1;
+  if(argstr(1, path, MAXPATH) < 0)
+    return -1;
+
+  begin_op(); // 开始文件系统操作
+
+  // 创建一个符号链接文件
+  struct inode *ip = create(path, T_SYMLINK, 0, 0); // 创建符号链接文件，主设备号和次设备号为 0
+  if(ip == 0) {
+    printf("sys_symlink: Can't create file called %s! \n", path);
+    return -1;
+  }
+  writei(ip, 0, (uint64)target, 0, MAXPATH); // 将目标路径写入符号链接文件中
+  iunlockput(ip); // 解锁并释放 inode
+
+  end_op(); // 结束文件系统操作
+
+  return 0;
+}
+
 uint64
 sys_open(void)
 {
@@ -316,24 +342,42 @@ sys_open(void)
 
   begin_op();
 
+  int try_times = 0;
+  start:
   if(omode & O_CREATE){
-    ip = create(path, T_FILE, 0, 0);
+    ip = create(path, T_FILE, 0, 0); // 创建文件
     if(ip == 0){
       end_op();
       return -1;
     }
   } else {
-    if((ip = namei(path)) == 0){
+    if((ip = namei(path)) == 0){ // 找不到路径
       end_op();
       return -1;
     }
-    ilock(ip);
+    ilock(ip); // 锁定inode
+    // 检查如果是目录且不是只读模式，则返回错误
     if(ip->type == T_DIR && omode != O_RDONLY){
       iunlockput(ip);
       end_op();
       return -1;
     }
   }
+
+  if(ip->type==T_SYMLINK && !(omode&O_NOFOLLOW))
+    {
+      try_times += 1;
+      // 尝试次数不能超过10次
+      if(try_times>10)
+      {
+        iunlockput(ip);
+        end_op();
+        return -1;
+      }
+      readi(ip, 0, (uint64)path, 0, MAXPATH); // 读取符号链接的目标路径
+      iunlockput(ip); // 解锁并释放符号链接 inode
+      goto start; // 跳回开始重新尝试
+    }
 
   if(ip->type == T_DEVICE && (ip->major < 0 || ip->major >= NDEV)){
     iunlockput(ip);
