@@ -1,0 +1,35 @@
+1. Which other xv6 system call(s) could be made faster using this shared page? Explain how. 
+在 xv6 中，系统调用如 fork、exec 和 sbrk 可以通过使用共享页来加速。具体如下：
+fork：
+当前过程：在 fork 中，xv6 会复制父进程的地址空间到子进程。这需要逐页复制，过程比较耗时。
+使用共享页的优化：通过使用共享页（写时复制），地址空间不需要立即复制。父进程和子进程可以初始共享相同的页。当任一进程写入共享页时，会创建该页的副本并进行写入。这样减少了 fork 系统调用中的页复制开销。
+exec：
+当前过程：exec 系统调用会将当前进程的地址空间替换为新地址空间。这需要设置新的页表并复制必要的数据。
+使用共享页的优化：使用共享页来存储常用数据（如用户栈）可以加速 exec 过程，因为在创建新地址空间时减少了需要复制或初始化的数据量。
+sbrk：
+当前过程：sbrk 系统调用增加进程的数据空间，需要分配新页并更新页表。
+使用共享页的优化：通过使用共享页进行初始堆扩展，可以加快 sbrk，因为初始分配的页可以共享，只有在写入时才真正分配物理页（写时复制）。
+2. For every leaf page in the vmprint output, explain what it logically contains and what its permission bits are. 
+    Figure 3.4 in the xv6 book might be helpful, although note that the figure might have a slightly different 
+    set of pages than the init process that's being inspected here. 
+输出:
+-页表0x0000000087f6b000
+. .0: pte 0x0000000021fd9801 pa 0x0000000087f66000
+. . . .0: pte 0x0000000021fd9401 pa 0x0000000087f65000
+.. .. ..0: pte 0x0000000021fd9c1b pa 0x0000000087f67000
+.. .. ..1: pte 0x0000000021fd9017 pa 0x0000000087f64000
+.. .. ..2: pte 0x0000000021fd8c07 pa 0x0000000087f63000
+.. .. ..3: pte 0x0000000021fd8817 pa 0x0000000087f62000
+. .255: pte 0x0000000021fda801 pa 0x0000000087f6a000
+. . . .511: pte 0x0000000021fda401 pa 0x0000000087f69000
+.. .. ..509: pte 0x0000000021fda013 pa 0x0000000087f68000
+.. .. ..510: pte 0x0000000021fdd007 pa 0x0000000087f74000
+.. .. ..511: pte 0x0000000020001c0b pa 0x0000000080007000
+
+—PTE 0的权限为:R X U。
+- PTE 1的权限:R W U，是old stack的页面(?)
+—PTE 2的权限为:R w，是exec()创建的guard page。
+—PTE 3的权限为:R W U。它是由exec()创建的user's stack。
+—pte509权限:R U，是usycall information的页面。
+—PTE 510的权限为:R W，是trapframe的页面。
+—PTE 511的权限为:R X，是trampoline页面。
