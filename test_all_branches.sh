@@ -1,9 +1,7 @@
 #!/bin/bash
 
-# 定义一个分支列表
 branches=("util" "syscall" "pgtbl" "traps" "cow" "thread" "net" "lock" "fs" "mmap") 
 
-# 保存当前分支名
 current_branch=$(git branch --show-current)
 
 for branch in "${branches[@]}"
@@ -27,7 +25,6 @@ do
   echo "Running tests for $branch"
   make grade
   
-  # 检查测试结果
   if [ $? -eq 0 ]; then
     echo "Tests passed on branch $branch"
   else
