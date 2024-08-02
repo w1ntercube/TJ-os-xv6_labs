@@ -1,0 +1,27 @@
+1. Looking at the backtrace output, which function called syscall?
+通过堆栈回溯可以看到，函数 usertrap() 调用了 syscall() 函数。
+
+2. What is the value of p->trapframe->a7 and what does that value represent? (Hint: look user/initcode.S, the first user program xv6 starts.)
+输入命令查看 p->trapframe->a7 的值是多少。
+(gdb) p p->trapframe->a7
+$2 = 7
+(gdb)
+得到 a7 的值为 7 。根据参考教材 xv6 book 第二章和 user/initcode.S 中的代码可知，这个 a7 寄存器中保存了将要执行的系统调用号。这里的系统调用号为 7，在 kernel/syscall.h 中可以找到，这个系统调用为 SYS_exec 。
+
+3. What was the previous mode that the CPU was in?
+(gdb) p/t $sstatus
+$4 = 100010
+(gdb)
+SPP 位指示进入管理员模式之前 hart 执行的特权级别。 当采取陷阱时，如果陷阱源自用户模式，则 SPP 设置为 0，否则设置为 1。 当执行 SRET 指令（见第 3.3.2 节）从陷阱处理程序返回时，如果 SPP 位为 0，则特权级别设置为用户模式，如果 SPP 位为 1，则设置为超级用户模式； 然后将 SPP 设置为 0。
+根据 sstatus 的二进制值 100010 可知，SPP 位是 0，那么在执行系统调用陷入内核之前的特权级别就是 user mode.
+所以问题答案：用户模式（User Mode）。
+
+4. Write down the assembly instruction the kernel is panicing at. Which register corresponds to the varialable num?
+内核 panic 在 lw a3,0(zero)。num 代表 a3 寄存器。
+
+5. Why does the kernel crash? Hint: look at figure 3-3 in the text; is address 0 mapped in the kernel address space? Is that confirmed by the value in scause above? (See description of scause in RISC-V privileged instructions)
+
+答案：内核因为加载了一个未使用的地址 0 处的内存数据而崩溃（Load page fault）。地址 0 并不映射到内核空间中（从 0x80000000 开始）。scause 中的异常代码证实了上述观点。
+
+6. What is the name of the binary that was running when the kernel paniced? What is its process id (pid)?
+答案：这个二进制的名字为 initcode ，其 process id 为 1.
